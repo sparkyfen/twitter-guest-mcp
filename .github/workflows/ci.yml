@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
@@ -15,4 +16,6 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      # tsc --noEmit does not exercise the emit path that produces the bin target.
+      - run: npm run build
       - run: npm test
