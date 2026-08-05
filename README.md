@@ -47,8 +47,7 @@ Or: `claude mcp add twitter -- node /path/to/twitter-guest-mcp/dist/index.js`
 | Input | Type | Default | Description |
 | --- | --- | --- | --- |
 | `tweet` | string | — | Tweet URL (x.com / twitter.com / mirrors) or bare numeric ID |
-| `include_images` | boolean | `true` | Also return photos & video thumbnails as viewable images |
-| `max_images` | number | `4` | Cap on fetched images (0–8) |
+| `max_images` | number | `4` | Photos & video thumbnails to return as viewable images (0–6, `0` disables) |
 
 Returns a JSON block (text, author, metrics, media URLs incl. best-bitrate MP4 for video, poll results, quoted tweet) followed by image content blocks.
 
@@ -57,7 +56,7 @@ Returns a JSON block (text, author, metrics, media URLs incl. best-bitrate MP4 f
 1. `POST /1.1/guest/activate.json` with the public web bearer token → `guest_token`
 2. Token is cached in memory up to 1 h; dropped early when `x-rate-limit-remaining < 10` or on 401/403/429
 3. GraphQL `GET /graphql/<queryId>/TweetResultByRestId` with the token, a random browser UA, and a synthesized `ct0` CSRF cookie
-4. Up to 3 attempts, fresh token per retry
+4. Up to 3 attempts, fresh token per retry, with a short exponential backoff between attempts
 
 ## Maintenance
 

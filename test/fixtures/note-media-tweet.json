@@ -1,0 +1,55 @@
+{
+  "data": {
+    "tweetResult": {
+      "result": {
+        "__typename": "Tweet",
+        "rest_id": "1700000000000000005",
+        "core": {
+          "user_results": {
+            "result": {
+              "__typename": "User",
+              "rest_id": "79",
+              "core": { "name": "Note Media Poster", "screen_name": "notemedia" },
+              "legacy": { "followers_count": 10 }
+            }
+          }
+        },
+        "note_tweet": {
+          "note_tweet_results": {
+            "result": {
+              "text": "A very long note tweet body with a link https://t.co/note2 and an attached photo. https://t.co/pic1",
+              "entity_set": {
+                "urls": [
+                  {
+                    "url": "https://t.co/note2",
+                    "expanded_url": "https://example.org/article"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "legacy": {
+          "created_at": "Thu Jul 24 12:00:00 +0000 2025",
+          "full_text": "A very long note tweet body with a link…",
+          "lang": "en",
+          "favorite_count": 2,
+          "retweet_count": 0,
+          "reply_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "extended_entities": {
+            "media": [
+              {
+                "type": "photo",
+                "url": "https://t.co/pic1",
+                "media_url_https": "https://pbs.twimg.com/media/NOTEPIC.jpg",
+                "original_info": { "width": 800, "height": 600 }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

@@ -23,6 +23,14 @@ describe('parseTweetId', () => {
     expect(parseTweetId('not a tweet')).toBeNull();
     expect(parseTweetId('')).toBeNull();
   });
+
+  it('rejects malformed IDs instead of truncating them', () => {
+    // Alphanumeric run after digits must not silently become tweet "12".
+    expect(parseTweetId('https://x.com/user/status/12ab34')).toBeNull();
+    // Over-long digit runs must not be truncated to 25 digits.
+    expect(parseTweetId(`https://x.com/user/status/${'1'.repeat(28)}`)).toBeNull();
+    expect(parseTweetId('1'.repeat(28))).toBeNull();
+  });
 });
 
 function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}) {
@@ -32,7 +40,8 @@ function jsonResponse(body: unknown, status = 200, headers: Record<string, strin
   });
 }
 
-const activation = () => jsonResponse({ guest_token: 'tok-' + Math.random() });
+const activation = () =>
+  jsonResponse({ guest_token: 'tok' + Math.random().toString(36).slice(2) });
 
 describe('fetchTweet', () => {
   it('activates a guest token then fetches and classifies the tweet', async () => {
@@ -115,6 +124,42 @@ describe('fetchTweet', () => {
 
     // Each fetch saw remaining < 10 and dropped the token, so both activated.
     expect(activations).toBe(2);
+  });
+
+  it('retries when a partial response carries both data and errors', async () => {
+    let graphqlCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/1.1/guest/activate.json')) return activation();
+      graphqlCalls++;
+      if (graphqlCalls === 1) {
+        return jsonResponse({
+          data: { tweetResult: {} },
+          errors: [{ message: 'Rate limit exceeded' }]
+        });
+      }
+      return jsonResponse(photoQuote);
+    });
+
+    const session = new GuestSession(fetchMock as typeof fetch);
+    const lookup = await fetchTweet('1', session, fetchMock as typeof fetch);
+
+    // Must not classify the partial payload as not_found; must retry instead.
+    expect(lookup.status).toBe('found');
+    expect(graphqlCalls).toBe(2);
+  });
+
+  it('wraps a literal-null JSON body in TweetFetchError instead of a raw TypeError', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/1.1/guest/activate.json')) return activation();
+      return jsonResponse(null);
+    });
+
+    const session = new GuestSession(fetchMock as typeof fetch);
+    await expect(fetchTweet('1', session, fetchMock as typeof fetch)).rejects.toThrow(
+      TweetFetchError
+    );
   });
 
   it('gives up after 3 attempts with a descriptive error', async () => {

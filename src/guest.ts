@@ -6,22 +6,30 @@ import {
 } from './constants.js';
 
 const CHROME_VERSION = 145;
+const ACTIVATE_TIMEOUT_MS = 10_000;
+const GUEST_TOKEN_PATTERN = /^[A-Za-z0-9]{1,32}$/;
 
-/** Random plausible Chrome/Edge UA + matching sec-ch-ua, like FxEmbed's generateUserAgent. */
-export function generateUserAgent(): { userAgent: string; secChUa: string } {
+/** Random plausible Chrome/Edge UA + matching client hints, like FxEmbed's generateUserAgent. */
+function generateUserAgent(): {
+  userAgent: string;
+  secChUa: string;
+  secChUaPlatform: string;
+} {
   const version = CHROME_VERSION - Math.floor(Math.random() * 3);
   const isEdge = Math.random() > 0.5;
-  const platforms = [
-    'Windows NT 10.0; Win64; x64',
-    'Macintosh; Intel Mac OS X 10_15_7',
-    'X11; Linux x86_64'
+  const platforms: Array<[string, string]> = [
+    ['Windows NT 10.0; Win64; x64', '"Windows"'],
+    ['Macintosh; Intel Mac OS X 10_15_7', '"macOS"'],
+    ['X11; Linux x86_64', '"Linux"']
   ];
-  const platform = platforms[Math.floor(Math.random() * platforms.length)]!;
+  const [platform, secChUaPlatform] =
+    platforms[Math.floor(Math.random() * platforms.length)]!;
   const edgeSuffix = isEdge ? ` Edg/${version}.0.0.0` : '';
   const brand = isEdge ? 'Microsoft Edge' : 'Google Chrome';
   return {
     userAgent: `Mozilla/5.0 (${platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${version}.0.0.0 Safari/537.36${edgeSuffix}`,
-    secChUa: `".Not/A)Brand";v="99", "${brand}";v="${version}", "Chromium";v="${version}"`
+    secChUa: `".Not/A)Brand";v="99", "${brand}";v="${version}", "Chromium";v="${version}"`,
+    secChUaPlatform
   };
 }
 
@@ -55,21 +63,26 @@ export class GuestSession {
     return this.activating;
   }
 
-  invalidate(): void {
-    this.cached = null;
+  /** Drops the cached token, but only if it is still the one the caller saw fail. */
+  invalidate(token: string): void {
+    if (this.cached?.token === token) {
+      this.cached = null;
+    }
   }
 
   private async activate(): Promise<string> {
-    const { userAgent, secChUa } = generateUserAgent();
+    const { userAgent, secChUa, secChUaPlatform } = generateUserAgent();
     const response = await this.fetchImpl(`${API_ROOT}/1.1/guest/activate.json`, {
       method: 'POST',
       headers: {
         ...BASE_HEADERS,
         'Authorization': GUEST_BEARER_TOKEN,
         'User-Agent': userAgent,
-        'sec-ch-ua': secChUa
+        'sec-ch-ua': secChUa,
+        'sec-ch-ua-platform': secChUaPlatform
       },
-      body: ''
+      body: '',
+      signal: AbortSignal.timeout(ACTIVATE_TIMEOUT_MS)
     });
     if (!response.ok) {
       throw new Error(`Guest activation failed: HTTP ${response.status}`);
@@ -78,6 +91,9 @@ export class GuestSession {
     if (!json.guest_token) {
       throw new Error('Guest activation returned no guest_token');
     }
+    if (!GUEST_TOKEN_PATTERN.test(json.guest_token)) {
+      throw new Error('Guest activation returned a malformed guest_token');
+    }
     this.cached = { token: json.guest_token, fetchedAt: Date.now() };
     return json.guest_token;
   }
@@ -85,13 +101,14 @@ export class GuestSession {
 
 /** Request headers for a guest GraphQL call, mirroring FxEmbed's twitterFetch. */
 export function buildGuestHeaders(guestToken: string): Record<string, string> {
-  const { userAgent, secChUa } = generateUserAgent();
+  const { userAgent, secChUa, secChUaPlatform } = generateUserAgent();
   const csrfToken = crypto.randomUUID().replace(/-/g, '');
   return {
     ...BASE_HEADERS,
     'Authorization': GUEST_BEARER_TOKEN,
     'User-Agent': userAgent,
     'sec-ch-ua': secChUa,
+    'sec-ch-ua-platform': secChUaPlatform,
     'Cookie': [
       `guest_id_ads=v1%3A${guestToken}`,
       `guest_id_marketing=v1%3A${guestToken}`,

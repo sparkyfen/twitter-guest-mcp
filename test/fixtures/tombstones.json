@@ -20,5 +20,54 @@
         "result": { "__typename": "TweetUnavailable", "reason": "Suspended" }
       }
     }
+  },
+  "unknownReason": {
+    "data": {
+      "tweetResult": {
+        "result": { "__typename": "TweetUnavailable", "reason": "SomethingNew" }
+      }
+    }
+  },
+  "tombstoneNsfw": {
+    "data": {
+      "tweetResult": {
+        "result": {
+          "__typename": "TweetTombstone",
+          "tombstone": {
+            "text": {
+              "text": "Age-restricted adult content. This content might not be appropriate for people under 18 years old."
+            }
+          }
+        }
+      }
+    }
+  },
+  "tombstoneSuspended": {
+    "data": {
+      "tweetResult": {
+        "result": {
+          "__typename": "TweetTombstone",
+          "tombstone": {
+            "text": {
+              "text": "This Post is from a suspended account. Learn more"
+            }
+          }
+        }
+      }
+    }
+  },
+  "tombstoneGeneric": {
+    "data": {
+      "tweetResult": {
+        "result": {
+          "__typename": "TweetTombstone",
+          "tombstone": {
+            "text": {
+              "text": "This Post violated the X Rules. Learn more"
+            }
+          }
+        }
+      }
+    }
   }
 }

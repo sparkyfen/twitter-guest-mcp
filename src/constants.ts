@@ -76,10 +76,10 @@ export const BASE_HEADERS: Record<string, string> = {
   'DNT': '1',
   'x-twitter-client-language': 'en',
   'sec-ch-ua-mobile': '?0',
+  // 'sec-ch-ua-platform' is set per-request to match the randomized User-Agent.
   'content-type': 'application/json',
   'cache-control': 'no-cache',
   'x-twitter-active-user': 'yes',
-  'sec-ch-ua-platform': '"Windows"',
   'Accept': '*/*',
   'Origin': 'https://x.com',
   'Sec-Fetch-Site': 'same-site',

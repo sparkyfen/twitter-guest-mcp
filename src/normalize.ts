@@ -4,7 +4,6 @@
  * shifts over time, so everything here is defensive.
  */
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 type Raw = Record<string, any>;
 
 export interface NormalizedMedia {
@@ -138,25 +137,35 @@ function normalizeMedia(mediaList: Raw[] | undefined): NormalizedMedia[] {
  * Expand t.co links to their real URLs and drop trailing media t.co links
  * (each attached media item repeats as a t.co URL at the end of full_text).
  */
-function cleanText(text: string, legacy: Raw): string {
+function cleanText(
+  text: string,
+  urls: Raw[] | undefined,
+  media: Raw[] | undefined
+): string {
   let out = text;
-  for (const u of legacy.entities?.urls ?? []) {
+  for (const u of urls ?? []) {
     if (u.url && u.expanded_url) out = out.split(u.url).join(u.expanded_url);
   }
-  for (const m of legacy.extended_entities?.media ?? legacy.entities?.media ?? []) {
+  for (const m of media ?? []) {
     if (m.url) out = out.split(m.url).join('');
   }
   return out.trim();
 }
 
+/** Flattens a card's binding_values array into a keyed map of string values. */
+function bindingValues(card: Raw | undefined): Record<string, string> {
+  const values: Raw[] = card?.legacy?.binding_values ?? [];
+  const byKey: Record<string, string> = {};
+  for (const v of values) {
+    if (typeof v.value?.string_value === 'string') byKey[v.key] = v.value.string_value;
+  }
+  return byKey;
+}
+
 function normalizePoll(card: Raw | undefined): NormalizedTweet['poll'] {
   const cardName: string | undefined = card?.legacy?.name;
   if (!cardName || !cardName.includes('poll')) return undefined;
-  const values: Raw[] = card?.legacy?.binding_values ?? [];
-  const byKey: Record<string, any> = {};
-  for (const v of values) {
-    byKey[v.key] = v.value?.string_value ?? v.value?.boolean_value;
-  }
+  const byKey = bindingValues(card);
   const choices: NormalizedPollChoice[] = [];
   for (let i = 1; i <= 4; i++) {
     const label = byKey[`choice${i}_label`];
@@ -174,11 +183,7 @@ function normalizePoll(card: Raw | undefined): NormalizedTweet['poll'] {
 function normalizeCard(card: Raw | undefined): NormalizedTweet['card'] {
   const cardName: string | undefined = card?.legacy?.name;
   if (!cardName || cardName.includes('poll')) return undefined;
-  const values: Raw[] = card?.legacy?.binding_values ?? [];
-  const byKey: Record<string, string> = {};
-  for (const v of values) {
-    if (typeof v.value?.string_value === 'string') byKey[v.key] = v.value.string_value;
-  }
+  const byKey = bindingValues(card);
   const out = {
     title: byKey['title'],
     description: byKey['description'],
@@ -194,7 +199,7 @@ function toIsoDate(twitterDate: string | undefined): string | undefined {
   return isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
 }
 
-export function normalizeTweet(rawResult: Raw, depth = 0): NormalizedTweet {
+export function normalizeTweet(rawResult: Raw, includeQuoted = true): NormalizedTweet {
   const result = unwrapTweetResult(rawResult) ?? {};
   const legacy: Raw = result.legacy ?? {};
   const id: string = result.rest_id ?? legacy.id_str ?? '';
@@ -204,15 +209,17 @@ export function normalizeTweet(rawResult: Raw, depth = 0): NormalizedTweet {
     result.note_tweet?.note_tweet_results?.result?.text;
   const noteEntities: Raw | undefined =
     result.note_tweet?.note_tweet_results?.result?.entity_set;
+  const attachedMedia: Raw[] | undefined =
+    legacy.extended_entities?.media ?? legacy.entities?.media;
   const text = noteText
-    ? cleanText(noteText, { entities: noteEntities ?? {} })
-    : cleanText(legacy.full_text ?? '', legacy);
+    ? cleanText(noteText, noteEntities?.urls, attachedMedia)
+    : cleanText(legacy.full_text ?? '', legacy.entities?.urls, attachedMedia);
 
   const views = result.views?.count ? parseInt(result.views.count, 10) : undefined;
 
   const tweet: NormalizedTweet = {
     id,
-    url: `https://x.com/${author?.screenName ?? 'i'}/status/${id}`,
+    url: `https://x.com/${author?.screenName || 'i'}/status/${id}`,
     text,
     createdAt: toIsoDate(legacy.created_at),
     lang: legacy.lang,
@@ -225,12 +232,12 @@ export function normalizeTweet(rawResult: Raw, depth = 0): NormalizedTweet {
       bookmarks: legacy.bookmark_count,
       views
     },
-    media: normalizeMedia(legacy.extended_entities?.media ?? legacy.entities?.media),
+    media: normalizeMedia(attachedMedia),
     poll: normalizePoll(result.card),
     card: normalizeCard(result.card)
   };
 
-  if (depth === 0 && result.quoted_status_result?.result) {
+  if (includeQuoted && result.quoted_status_result?.result) {
     const quotedRaw = result.quoted_status_result.result as Raw;
     if (quotedRaw.__typename === 'TweetTombstone' || quotedRaw.__typename === 'TweetUnavailable') {
       tweet.quotedTweet = {
@@ -242,7 +249,7 @@ export function normalizeTweet(rawResult: Raw, depth = 0): NormalizedTweet {
         note: 'Quoted tweet is unavailable (deleted, protected, or withheld).'
       };
     } else {
-      tweet.quotedTweet = normalizeTweet(quotedRaw, depth + 1);
+      tweet.quotedTweet = normalizeTweet(quotedRaw, false);
     }
   }
 
@@ -255,6 +262,15 @@ export function classifyResponse(response: Raw | null | undefined): TweetLookup 
 
   if (!result || Object.keys(result).length === 0) {
     return { status: 'not_found' };
+  }
+
+  if (result.__typename === 'TweetTombstone') {
+    const tombstoneText: string =
+      result.tombstone?.text?.text ?? 'Tweet is unavailable.';
+    let reason: 'nsfw' | 'suspended' | 'unknown' = 'unknown';
+    if (/age-restricted|adult content/i.test(tombstoneText)) reason = 'nsfw';
+    else if (/suspended/i.test(tombstoneText)) reason = 'suspended';
+    return { status: 'unavailable', reason, message: tombstoneText };
   }
 
   if (result.__typename === 'TweetUnavailable') {
