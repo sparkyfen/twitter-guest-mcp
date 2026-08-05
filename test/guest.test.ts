@@ -35,7 +35,19 @@ describe('GuestSession', () => {
     expect(activations).toBe(1);
   });
 
-  it('passes an abort signal to the activation request so it cannot hang forever', async () => {
+  it('aborts an activation that never responds once the timeout elapses', async () => {
+    // Real timers only: AbortSignal.timeout does not run on vitest's fake timers.
+    const hangingFetch = vi.fn(
+      (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal!.reason));
+        })
+    );
+    const session = new GuestSession(hangingFetch as unknown as typeof fetch, 5);
+    await expect(session.getToken()).rejects.toMatchObject({ name: 'TimeoutError' });
+  });
+
+  it('passes an abort signal to the activation request', async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       expect(init?.signal).toBeInstanceOf(AbortSignal);
       return jsonResponse({ guest_token: 'abc123' });

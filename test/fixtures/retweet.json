@@ -1,0 +1,66 @@
+{
+  "data": {
+    "tweetResult": {
+      "result": {
+        "__typename": "Tweet",
+        "rest_id": "1700000000000000009",
+        "core": {
+          "user_results": {
+            "result": {
+              "__typename": "User",
+              "rest_id": "77",
+              "core": { "name": "The Retweeter", "screen_name": "retweeter" }
+            }
+          }
+        },
+        "views": { "count": "5" },
+        "legacy": {
+          "created_at": "Tue Jul 22 08:00:00 +0000 2025",
+          "full_text": "RT @original: A long original post that the retweet wrapper truncates right here…",
+          "lang": "en",
+          "favorite_count": 0,
+          "retweet_count": 400,
+          "reply_count": 0,
+          "quote_count": 0,
+          "bookmark_count": 0,
+          "retweeted_status_result": {
+            "result": {
+              "__typename": "Tweet",
+              "rest_id": "1690000000000000008",
+              "core": {
+                "user_results": {
+                  "result": {
+                    "__typename": "User",
+                    "rest_id": "88",
+                    "core": { "name": "Original Author", "screen_name": "original" }
+                  }
+                }
+              },
+              "views": { "count": "98765" },
+              "legacy": {
+                "created_at": "Mon Jul 21 09:30:00 +0000 2025",
+                "full_text": "A long original post that the retweet wrapper truncates right here, but the full text lives on the retweeted status. https://t.co/rtmedia",
+                "lang": "en",
+                "favorite_count": 2200,
+                "retweet_count": 400,
+                "reply_count": 33,
+                "quote_count": 7,
+                "bookmark_count": 15,
+                "extended_entities": {
+                  "media": [
+                    {
+                      "url": "https://t.co/rtmedia",
+                      "type": "photo",
+                      "media_url_https": "https://pbs.twimg.com/media/RTPIC.jpg",
+                      "original_info": { "width": 1200, "height": 800 }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

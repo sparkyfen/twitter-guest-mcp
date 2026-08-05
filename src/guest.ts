@@ -46,7 +46,10 @@ export class GuestSession {
   private cached: CachedToken | null = null;
   private activating: Promise<string> | null = null;
 
-  constructor(private readonly fetchImpl: typeof fetch = fetch) {}
+  constructor(
+    private readonly fetchImpl: typeof fetch = fetch,
+    private readonly activateTimeoutMs: number = ACTIVATE_TIMEOUT_MS
+  ) {}
 
   async getToken(): Promise<string> {
     if (
@@ -82,7 +85,7 @@ export class GuestSession {
         'sec-ch-ua-platform': secChUaPlatform
       },
       body: '',
-      signal: AbortSignal.timeout(ACTIVATE_TIMEOUT_MS)
+      signal: AbortSignal.timeout(this.activateTimeoutMs)
     });
     if (!response.ok) {
       throw new Error(`Guest activation failed: HTTP ${response.status}`);

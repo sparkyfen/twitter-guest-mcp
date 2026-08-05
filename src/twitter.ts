@@ -29,7 +29,8 @@ function buildUrl(tweetId: string): string {
 export async function fetchTweet(
   tweetId: string,
   session: GuestSession,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: typeof fetch = fetch,
+  requestTimeoutMs: number = REQUEST_TIMEOUT_MS
 ): Promise<TweetLookup> {
   let lastError: unknown = null;
 
@@ -49,16 +50,21 @@ export async function fetchTweet(
       continue;
     }
 
+    /** Records the failure and drops the token so the next attempt re-activates. */
+    const fail = (e: unknown) => {
+      lastError = e;
+      if (canRetry) session.invalidate(token);
+    };
+
     let response: Response;
     try {
       response = await fetchImpl(buildUrl(tweetId), {
         method: 'GET',
         headers: buildGuestHeaders(token),
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+        signal: AbortSignal.timeout(requestTimeoutMs)
       });
     } catch (e) {
-      lastError = e;
-      if (canRetry) session.invalidate(token);
+      fail(e);
       continue;
     }
 
@@ -68,8 +74,7 @@ export async function fetchTweet(
     }
 
     if (response.status === 401 || response.status === 403 || response.status === 429) {
-      lastError = new Error(`HTTP ${response.status} from Twitter API`);
-      if (canRetry) session.invalidate(token);
+      fail(new Error(`HTTP ${response.status} from Twitter API`));
       continue;
     }
 
@@ -77,14 +82,12 @@ export async function fetchTweet(
     try {
       json = await response.json();
     } catch (e) {
-      lastError = e;
-      if (canRetry) session.invalidate(token);
+      fail(e);
       continue;
     }
 
     if (typeof json !== 'object' || json === null) {
-      lastError = new Error(`Unexpected non-object response body (HTTP ${response.status})`);
-      if (canRetry) session.invalidate(token);
+      fail(new Error(`Unexpected non-object response body (HTTP ${response.status})`));
       continue;
     }
 
@@ -92,18 +95,14 @@ export async function fetchTweet(
     // Errors first: a partial response can carry both `data` and `errors`
     // (e.g. rate limiting), and must retry rather than classify as not_found.
     if (Array.isArray(body.errors) && body.errors.length > 0) {
-      lastError = new Error(
-        `Twitter API error: ${body.errors.map(e => e.message).join('; ')}`
-      );
-      if (canRetry) session.invalidate(token);
+      fail(new Error(`Twitter API error: ${body.errors.map(e => e.message).join('; ')}`));
       continue;
     }
     if (body.data !== undefined) {
       return classifyResponse(body as Record<string, unknown>);
     }
 
-    lastError = new Error(`Unexpected response shape (HTTP ${response.status})`);
-    if (canRetry) session.invalidate(token);
+    fail(new Error(`Unexpected response shape (HTTP ${response.status})`));
   }
 
   throw new TweetFetchError(

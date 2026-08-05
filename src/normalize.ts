@@ -50,6 +50,8 @@ export interface NormalizedTweet {
   poll?: { choices: NormalizedPollChoice[]; totalVotes: number; endsAt?: string };
   card?: { title?: string; description?: string; url?: string };
   quotedTweet?: NormalizedTweet;
+  /** Present when this is a retweet: the account that retweeted the original. */
+  retweetedBy?: NormalizedAuthor;
   /** Present when the tweet exists but content is withheld (nsfw/protected/etc). */
   note?: string;
 }
@@ -133,9 +135,33 @@ function normalizeMedia(mediaList: Raw[] | undefined): NormalizedMedia[] {
   });
 }
 
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'"
+};
+
+/** X escapes `&`, `<` and `>` in full_text; undo that so callers get real text. */
+function unescapeHtml(text: string): string {
+  return text.replace(/&(#[0-9]+|#[xX][0-9a-fA-F]+|[a-zA-Z]+);/g, (match, ref: string) => {
+    if (ref.startsWith('#')) {
+      const code =
+        ref[1] === 'x' || ref[1] === 'X'
+          ? parseInt(ref.slice(2), 16)
+          : parseInt(ref.slice(1), 10);
+      if (isNaN(code) || code < 0 || code > 0x10ffff) return match;
+      return String.fromCodePoint(code);
+    }
+    return NAMED_ENTITIES[ref.toLowerCase()] ?? match;
+  });
+}
+
 /**
  * Expand t.co links to their real URLs and drop trailing media t.co links
- * (each attached media item repeats as a t.co URL at the end of full_text).
+ * (each attached media item repeats as a t.co URL at the end of full_text),
+ * then unescape HTML entities.
  */
 function cleanText(
   text: string,
@@ -143,13 +169,29 @@ function cleanText(
   media: Raw[] | undefined
 ): string {
   let out = text;
-  for (const u of urls ?? []) {
+  // Longest first: a shorter t.co slug can be a strict prefix of a longer one,
+  // and replacing it first would corrupt the longer URL.
+  const byLength = [...(urls ?? [])].sort(
+    (a, b) => String(b.url ?? '').length - String(a.url ?? '').length
+  );
+  for (const u of byLength) {
     if (u.url && u.expanded_url) out = out.split(u.url).join(u.expanded_url);
   }
-  for (const m of media ?? []) {
+  const mediaByLength = [...(media ?? [])].sort(
+    (a, b) => String(b.url ?? '').length - String(a.url ?? '').length
+  );
+  for (const m of mediaByLength) {
     if (m.url) out = out.split(m.url).join('');
   }
-  return out.trim();
+  // After t.co expansion, so expanded_url values are never double-processed.
+  return unescapeHtml(out.trim());
+}
+
+/** parseInt that yields undefined rather than NaN (which serializes to null). */
+function toCount(value: unknown): number | undefined {
+  if (value === null || value === undefined) return undefined;
+  const parsed = parseInt(String(value), 10);
+  return isNaN(parsed) ? undefined : parsed;
 }
 
 /** Flattens a card's binding_values array into a keyed map of string values. */
@@ -170,7 +212,7 @@ function normalizePoll(card: Raw | undefined): NormalizedTweet['poll'] {
   for (let i = 1; i <= 4; i++) {
     const label = byKey[`choice${i}_label`];
     if (label === undefined) continue;
-    choices.push({ label, votes: parseInt(byKey[`choice${i}_count`] ?? '0', 10) });
+    choices.push({ label, votes: toCount(byKey[`choice${i}_count`]) ?? 0 });
   }
   if (choices.length === 0) return undefined;
   return {
@@ -202,6 +244,20 @@ function toIsoDate(twitterDate: string | undefined): string | undefined {
 export function normalizeTweet(rawResult: Raw, includeQuoted = true): NormalizedTweet {
   const result = unwrapTweetResult(rawResult) ?? {};
   const legacy: Raw = result.legacy ?? {};
+
+  // On a retweet, legacy.full_text is a truncated "RT @orig: …" wrapper and the
+  // real text/media/counts live on the retweeted status. No-op when absent.
+  const retweeted = unwrapTweetResult(legacy.retweeted_status_result?.result);
+  if (
+    retweeted &&
+    retweeted.__typename !== 'TweetTombstone' &&
+    retweeted.__typename !== 'TweetUnavailable'
+  ) {
+    const original = normalizeTweet(retweeted, includeQuoted);
+    const retweeter = normalizeAuthor(result.core?.user_results?.result);
+    return retweeter ? { ...original, retweetedBy: retweeter } : original;
+  }
+
   const id: string = result.rest_id ?? legacy.id_str ?? '';
   const author = normalizeAuthor(result.core?.user_results?.result);
 
@@ -215,7 +271,7 @@ export function normalizeTweet(rawResult: Raw, includeQuoted = true): Normalized
     ? cleanText(noteText, noteEntities?.urls, attachedMedia)
     : cleanText(legacy.full_text ?? '', legacy.entities?.urls, attachedMedia);
 
-  const views = result.views?.count ? parseInt(result.views.count, 10) : undefined;
+  const views = toCount(result.views?.count);
 
   const tweet: NormalizedTweet = {
     id,
@@ -267,8 +323,12 @@ export function classifyResponse(response: Raw | null | undefined): TweetLookup 
   if (result.__typename === 'TweetTombstone') {
     const tombstoneText: string =
       result.tombstone?.text?.text ?? 'Tweet is unavailable.';
-    let reason: 'nsfw' | 'suspended' | 'unknown' = 'unknown';
-    if (/age-restricted|adult content/i.test(tombstoneText)) reason = 'nsfw';
+    // A deleted author's posts are gone rather than withheld.
+    if (/no longer exists/i.test(tombstoneText)) return { status: 'not_found' };
+    let reason: 'nsfw' | 'protected' | 'suspended' | 'unknown' = 'unknown';
+    if (/age-restricted|adult content|sensitive content/i.test(tombstoneText)) {
+      reason = 'nsfw';
+    } else if (/limits who can view|protected/i.test(tombstoneText)) reason = 'protected';
     else if (/suspended/i.test(tombstoneText)) reason = 'suspended';
     return { status: 'unavailable', reason, message: tombstoneText };
   }

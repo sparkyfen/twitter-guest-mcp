@@ -5,6 +5,7 @@ import videoTweet from './fixtures/video-tweet.json';
 import notePoll from './fixtures/note-poll-tweet.json';
 import noteMedia from './fixtures/note-media-tweet.json';
 import tombstones from './fixtures/tombstones.json';
+import retweet from './fixtures/retweet.json';
 
 describe('classifyResponse', () => {
   it('normalizes a photo tweet with a quoted tweet', () => {
@@ -194,6 +195,178 @@ describe('classifyResponse', () => {
       url: 'https://example.com/a'
     });
     expect(lookup.tweet.poll).toBeUndefined();
+  });
+
+  it('unescapes HTML entities in tweet text', () => {
+    const payload = {
+      data: {
+        tweetResult: {
+          result: {
+            __typename: 'Tweet',
+            rest_id: '45',
+            legacy: {
+              full_text:
+                'R&amp;D &lt;tag&gt; &quot;quoted&quot; &#39;apostrophe&#39; https://t.co/link1',
+              entities: {
+                urls: [
+                  {
+                    url: 'https://t.co/link1',
+                    expanded_url: 'https://example.com/?a=1&b=2'
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    };
+    const lookup = classifyResponse(payload);
+    expect(lookup.status).toBe('found');
+    if (lookup.status !== 'found') return;
+    expect(lookup.tweet.text).toBe(
+      `R&D <tag> "quoted" 'apostrophe' https://example.com/?a=1&b=2`
+    );
+  });
+
+  it('expands the longest t.co URL first so prefixes do not corrupt siblings', () => {
+    const payload = {
+      data: {
+        tweetResult: {
+          result: {
+            __typename: 'Tweet',
+            rest_id: '46',
+            legacy: {
+              full_text: 'a https://t.co/0F b https://t.co/0FabcdefGh',
+              entities: {
+                urls: [
+                  { url: 'https://t.co/0F', expanded_url: 'https://example.com/short' },
+                  {
+                    url: 'https://t.co/0FabcdefGh',
+                    expanded_url: 'https://example.com/long'
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    };
+    const lookup = classifyResponse(payload);
+    expect(lookup.status).toBe('found');
+    if (lookup.status !== 'found') return;
+    expect(lookup.tweet.text).toBe(
+      'a https://example.com/short b https://example.com/long'
+    );
+  });
+
+  it('unwraps a retweet to the original text, media, and metrics', () => {
+    const lookup = classifyResponse(retweet);
+    expect(lookup.status).toBe('found');
+    if (lookup.status !== 'found') return;
+    const tweet = lookup.tweet;
+
+    expect(tweet.id).toBe('1690000000000000008');
+    expect(tweet.text).not.toContain('RT @original:');
+    expect(tweet.text).not.toContain('…');
+    expect(tweet.text).toContain('the full text lives on the retweeted status');
+    expect(tweet.author).toMatchObject({ screenName: 'original' });
+    expect(tweet.retweetedBy).toMatchObject({
+      name: 'The Retweeter',
+      screenName: 'retweeter'
+    });
+    expect(tweet.media).toHaveLength(1);
+    expect(tweet.media[0]).toMatchObject({
+      type: 'photo',
+      url: 'https://pbs.twimg.com/media/RTPIC.jpg'
+    });
+    expect(tweet.metrics).toMatchObject({ likes: 2200, retweets: 400, views: 98765 });
+  });
+
+  it('leaves non-retweets untouched by the retweet unwrap', () => {
+    const lookup = classifyResponse(photoQuote);
+    expect(lookup.status).toBe('found');
+    if (lookup.status !== 'found') return;
+    expect(lookup.tweet.retweetedBy).toBeUndefined();
+    expect(lookup.tweet.id).toBe('1700000000000000001');
+  });
+
+  it('omits unparseable counts instead of emitting null', () => {
+    const payload = {
+      data: {
+        tweetResult: {
+          result: {
+            __typename: 'Tweet',
+            rest_id: '47',
+            views: { count: 'abc' },
+            legacy: { full_text: 'counts' },
+            card: {
+              legacy: {
+                name: 'poll2choice_text_only',
+                binding_values: [
+                  { key: 'choice1_label', value: { string_value: 'Yes' } },
+                  { key: 'choice1_count', value: { string_value: 'abc' } },
+                  { key: 'choice2_label', value: { string_value: 'No' } },
+                  { key: 'choice2_count', value: { string_value: '5' } }
+                ]
+              }
+            }
+          }
+        }
+      }
+    };
+    const lookup = classifyResponse(payload);
+    expect(lookup.status).toBe('found');
+    if (lookup.status !== 'found') return;
+    expect(lookup.tweet.metrics.views).toBeUndefined();
+    expect(lookup.tweet.poll?.choices[0]!.votes).toBe(0);
+    expect(lookup.tweet.poll?.totalVotes).toBe(5);
+  });
+
+  it('keeps a zero view count rather than dropping it', () => {
+    const payload = {
+      data: {
+        tweetResult: {
+          result: {
+            __typename: 'Tweet',
+            rest_id: '48',
+            views: { count: 0 },
+            legacy: { full_text: 'fresh post' }
+          }
+        }
+      }
+    };
+    const lookup = classifyResponse(payload);
+    expect(lookup.status).toBe('found');
+    if (lookup.status !== 'found') return;
+    expect(lookup.tweet.metrics.views).toBe(0);
+  });
+
+  it('maps protected, sensitive, and deleted-account tombstone wording', () => {
+    const tombstone = (text: string) => ({
+      data: {
+        tweetResult: {
+          result: { __typename: 'TweetTombstone', tombstone: { text: { text } } }
+        }
+      }
+    });
+
+    expect(
+      classifyResponse(
+        tombstone(
+          "You're unable to view this Post because this account owner limits who can view their Posts."
+        )
+      )
+    ).toMatchObject({ status: 'unavailable', reason: 'protected' });
+
+    expect(
+      classifyResponse(
+        tombstone('Sensitive content. This Post may contain sensitive content.')
+      )
+    ).toMatchObject({ status: 'unavailable', reason: 'nsfw' });
+
+    expect(
+      classifyResponse(tombstone('This Post is from an account that no longer exists.'))
+    ).toEqual({ status: 'not_found' });
   });
 
   it('normalizes animated_gif media as a gif with a video URL', () => {

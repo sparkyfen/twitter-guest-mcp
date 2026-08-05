@@ -75,6 +75,68 @@ describe('fetchTweetImages', () => {
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
+  it('skips a response whose content-length header exceeds the cap', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(new Uint8Array(10).fill(1), {
+          status: 200,
+          headers: {
+            'content-type': 'image/jpeg',
+            'content-length': String(1024 * 1024 + 1)
+          }
+        })
+    );
+    const tweet = tweetWith([{ url: 'https://pbs.twimg.com/media/CLAIMSHUGE.jpg' }]);
+
+    const images = await fetchTweetImages(tweet, 4, fetchMock as typeof fetch);
+    expect(images).toEqual([]);
+  });
+
+  it('accepts image mime types case-insensitively but rejects svg and missing types', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('UPPER')) return imageResponse(100, 'IMAGE/JPEG');
+      if (url.includes('SVG')) return imageResponse(100, 'image/svg+xml');
+      // No content-type at all.
+      return new Response(new Uint8Array(100).fill(1), { status: 200 });
+    });
+
+    const tweet = tweetWith([
+      { url: 'https://pbs.twimg.com/media/UPPER.jpg' },
+      { url: 'https://pbs.twimg.com/media/SVG.jpg' },
+      { url: 'https://pbs.twimg.com/media/NOTYPE.jpg' }
+    ]);
+    const images = await fetchTweetImages(tweet, 4, fetchMock as typeof fetch);
+
+    expect(images).toHaveLength(1);
+    expect(images[0]!.mimeType).toBe('image/jpeg');
+  });
+
+  it('rejects allowlisted hosts carrying a port or embedded credentials', async () => {
+    const fetchMock = vi.fn(async () => imageResponse());
+    const tweet = tweetWith([
+      { url: 'https://pbs.twimg.com:8080/media/A.jpg' },
+      { url: 'https://user:pw@pbs.twimg.com/media/B.jpg' }
+    ]);
+
+    const images = await fetchTweetImages(tweet, 4, fetchMock as typeof fetch);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(images).toEqual([]);
+  });
+
+  it('stops adding images once the combined byte budget is reached', async () => {
+    // 3 x 1 MiB exceeds the 2 MiB combined budget, so only two survive.
+    const fetchMock = vi.fn(async () => imageResponse(1024 * 1024));
+    const tweet = tweetWith([
+      { url: 'https://pbs.twimg.com/media/ONE.jpg' },
+      { url: 'https://pbs.twimg.com/media/TWO.jpg' },
+      { url: 'https://pbs.twimg.com/media/THREE.jpg' }
+    ]);
+
+    const images = await fetchTweetImages(tweet, 4, fetchMock as typeof fetch);
+    expect(images).toHaveLength(2);
+  });
+
   it('caps combined tweet + quoted-tweet media at max', async () => {
     const fetchMock = vi.fn(async () => imageResponse());
     const tweet = tweetWith(

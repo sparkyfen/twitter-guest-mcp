@@ -96,6 +96,38 @@ describe('get_tweet tool', () => {
     expect((content[0] as { text: string }).text).toContain('age-restricted');
   });
 
+  it('fences the unavailable message with the untrusted-content notice', async () => {
+    const client = await connect(makeFetchMock(tombstones.tombstoneGeneric));
+
+    const result = await client.callTool({
+      name: 'get_tweet',
+      arguments: { tweet: '123456789' }
+    });
+    const content = result.content as ContentBlock[];
+
+    expect(result.isError).toBe(true);
+    const text = (content[0] as { text: string }).text;
+    expect(text).toContain('UNTRUSTED');
+    expect(text).toContain('violated the X Rules');
+  });
+
+  it('reports a persistent upstream failure with the re-sync hint', async () => {
+    const client = await connect(
+      makeFetchMock({ errors: [{ message: 'Denied' }] })
+    );
+
+    const result = await client.callTool({
+      name: 'get_tweet',
+      arguments: { tweet: '123456789' }
+    });
+    const content = result.content as ContentBlock[];
+
+    expect(result.isError).toBe(true);
+    const text = (content[0] as { text: string }).text;
+    expect(text).toContain('after 3 attempts');
+    expect(text).toContain('FxEmbed');
+  });
+
   it('returns the untrusted-content notice, normalized JSON, and images by default', async () => {
     const fetchMock = makeFetchMock(photoQuote);
     const client = await connect(fetchMock);

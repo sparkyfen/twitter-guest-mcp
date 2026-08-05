@@ -162,6 +162,56 @@ describe('fetchTweet', () => {
     );
   });
 
+  it('aborts a GraphQL request that never responds once the timeout elapses', async () => {
+    // Real timers only: AbortSignal.timeout does not run on vitest's fake timers.
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/1.1/guest/activate.json')) {
+        return Promise.resolve(activation());
+      }
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal!.reason));
+      });
+    });
+
+    const session = new GuestSession(fetchMock as unknown as typeof fetch);
+    await expect(
+      fetchTweet('1', session, fetchMock as unknown as typeof fetch, 5)
+    ).rejects.toThrow(/timeout|abort/i);
+  });
+
+  it('backs off between retries, doubling the delay each time', async () => {
+    // Fake timers are safe here: the backoff uses setTimeout, not AbortSignal.timeout.
+    vi.useFakeTimers();
+    try {
+      let graphqlCalls = 0;
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/1.1/guest/activate.json')) return activation();
+        graphqlCalls++;
+        return jsonResponse({ errors: [{ message: 'Denied' }] });
+      });
+
+      const session = new GuestSession(fetchMock as typeof fetch);
+      const promise = fetchTweet('1', session, fetchMock as typeof fetch);
+      const rejection = expect(promise).rejects.toThrow(TweetFetchError);
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(graphqlCalls).toBe(1);
+      await vi.advanceTimersByTimeAsync(249);
+      expect(graphqlCalls).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(graphqlCalls).toBe(2);
+      await vi.advanceTimersByTimeAsync(499);
+      expect(graphqlCalls).toBe(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(graphqlCalls).toBe(3);
+
+      await rejection;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('gives up after 3 attempts with a descriptive error', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
