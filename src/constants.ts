@@ -6,7 +6,27 @@
  * packages/atmosphere/src/providers/twitter/graphql/{queries,features}.ts.
  */
 
+import * as zlib from 'node:zlib';
+
 export const API_ROOT = 'https://api.x.com';
+
+/** What this runtime's zlib can actually decompress, for {@link buildAcceptEncoding}. */
+export interface DecodeCapabilities {
+  br: boolean;
+  zstd: boolean;
+}
+
+/**
+ * Chrome's Accept-Encoding order, trimmed to what we can decode. Brotli needs
+ * Node 11.7+, zstd Node 22.15/23.8+ — advertising either on an older runtime
+ * would earn us a response body we cannot read.
+ */
+export function buildAcceptEncoding({ br, zstd }: DecodeCapabilities): string {
+  const encodings = ['gzip', 'deflate'];
+  if (br) encodings.push('br');
+  if (zstd) encodings.push('zstd');
+  return encodings.join(', ');
+}
 
 /**
  * The public bearer token X's own web client ships with — not a secret.
@@ -82,8 +102,12 @@ export const BASE_HEADERS: Record<string, string> = {
   'x-twitter-active-user': 'yes',
   'Accept': '*/*',
   // What real Chrome sends; undici's default 'gzip, deflate' would contradict
-  // a header set claiming to be Chrome. Node 24 decodes all four.
-  'Accept-Encoding': 'gzip, deflate, br, zstd',
+  // a header set claiming to be Chrome. Narrowed to what the running Node can
+  // decode, so we never advertise an encoding we would choke on.
+  'Accept-Encoding': buildAcceptEncoding({
+    br: typeof zlib.brotliDecompressSync === 'function',
+    zstd: typeof zlib.zstdDecompressSync === 'function'
+  }),
   'priority': 'u=1, i',
   'Origin': 'https://x.com',
   'Sec-Fetch-Site': 'same-site',
