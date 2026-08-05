@@ -74,6 +74,18 @@ function unwrapTweetResult(result: Raw | undefined): Raw | undefined {
   return result;
 }
 
+/**
+ * True when an (already unwrapped) tweet result cannot be normalized: an
+ * explicit tombstone typename, or the empty-object form X returns for a gone
+ * tweet, which carries neither a rest_id nor a legacy block.
+ */
+function isUnavailableResult(raw: Raw): boolean {
+  if (raw.__typename === 'TweetTombstone' || raw.__typename === 'TweetUnavailable') {
+    return true;
+  }
+  return !raw.rest_id && !raw.legacy;
+}
+
 function unwrapUserResult(result: Raw | undefined): Raw | undefined {
   if (!result) return undefined;
   if (result.__typename === 'UserWithVisibilityResults' && result.user) {
@@ -135,13 +147,15 @@ function normalizeMedia(mediaList: Raw[] | undefined): NormalizedMedia[] {
   });
 }
 
-const NAMED_ENTITIES: Record<string, string> = {
+// Null-prototype: a plain object literal would resolve `&constructor;` and
+// friends through Object.prototype and rewrite them into tweet text.
+const NAMED_ENTITIES: Record<string, string> = Object.assign(Object.create(null), {
   amp: '&',
   lt: '<',
   gt: '>',
   quot: '"',
   apos: "'"
-};
+});
 
 /** X escapes `&`, `<` and `>` in full_text; undo that so callers get real text. */
 function unescapeHtml(text: string): string {
@@ -159,32 +173,31 @@ function unescapeHtml(text: string): string {
 }
 
 /**
- * Expand t.co links to their real URLs and drop trailing media t.co links
- * (each attached media item repeats as a t.co URL at the end of full_text),
- * then unescape HTML entities.
+ * Unescape HTML entities, then expand t.co links to their real URLs and drop
+ * trailing media t.co links (each attached media item repeats as a t.co URL at
+ * the end of full_text).
  */
 function cleanText(
   text: string,
   urls: Raw[] | undefined,
   media: Raw[] | undefined
 ): string {
-  let out = text;
+  // Unescaping first: expanded_url values are substituted in afterwards, so
+  // they keep exactly the form X resolved rather than being unescaped too.
+  let out = unescapeHtml(text);
+  const replacements: { from: string; to: string }[] = [
+    ...(urls ?? [])
+      .filter(u => u.url && u.expanded_url)
+      .map(u => ({ from: String(u.url), to: String(u.expanded_url) })),
+    ...(media ?? []).filter(m => m.url).map(m => ({ from: String(m.url), to: '' }))
+  ];
   // Longest first: a shorter t.co slug can be a strict prefix of a longer one,
   // and replacing it first would corrupt the longer URL.
-  const byLength = [...(urls ?? [])].sort(
-    (a, b) => String(b.url ?? '').length - String(a.url ?? '').length
-  );
-  for (const u of byLength) {
-    if (u.url && u.expanded_url) out = out.split(u.url).join(u.expanded_url);
+  replacements.sort((a, b) => b.from.length - a.from.length);
+  for (const r of replacements) {
+    out = out.split(r.from).join(r.to);
   }
-  const mediaByLength = [...(media ?? [])].sort(
-    (a, b) => String(b.url ?? '').length - String(a.url ?? '').length
-  );
-  for (const m of mediaByLength) {
-    if (m.url) out = out.split(m.url).join('');
-  }
-  // After t.co expansion, so expanded_url values are never double-processed.
-  return unescapeHtml(out.trim());
+  return out.trim();
 }
 
 /** parseInt that yields undefined rather than NaN (which serializes to null). */
@@ -248,11 +261,8 @@ export function normalizeTweet(rawResult: Raw, includeQuoted = true): Normalized
   // On a retweet, legacy.full_text is a truncated "RT @orig: …" wrapper and the
   // real text/media/counts live on the retweeted status. No-op when absent.
   const retweeted = unwrapTweetResult(legacy.retweeted_status_result?.result);
-  if (
-    retweeted &&
-    retweeted.__typename !== 'TweetTombstone' &&
-    retweeted.__typename !== 'TweetUnavailable'
-  ) {
+  const retweetedGone = retweeted !== undefined && isUnavailableResult(retweeted);
+  if (retweeted && !retweetedGone) {
     const original = normalizeTweet(retweeted, includeQuoted);
     const retweeter = normalizeAuthor(result.core?.user_results?.result);
     return retweeter ? { ...original, retweetedBy: retweeter } : original;
@@ -281,11 +291,11 @@ export function normalizeTweet(rawResult: Raw, includeQuoted = true): Normalized
     lang: legacy.lang,
     author,
     metrics: {
-      likes: legacy.favorite_count,
-      retweets: legacy.retweet_count,
-      replies: legacy.reply_count,
-      quotes: legacy.quote_count,
-      bookmarks: legacy.bookmark_count,
+      likes: toCount(legacy.favorite_count),
+      retweets: toCount(legacy.retweet_count),
+      replies: toCount(legacy.reply_count),
+      quotes: toCount(legacy.quote_count),
+      bookmarks: toCount(legacy.bookmark_count),
       views
     },
     media: normalizeMedia(attachedMedia),
@@ -293,9 +303,15 @@ export function normalizeTweet(rawResult: Raw, includeQuoted = true): Normalized
     card: normalizeCard(result.card)
   };
 
+  if (retweetedGone) {
+    tweet.note = "Retweeted original is unavailable; text is X's truncated RT wrapper.";
+  }
+
   if (includeQuoted && result.quoted_status_result?.result) {
-    const quotedRaw = result.quoted_status_result.result as Raw;
-    if (quotedRaw.__typename === 'TweetTombstone' || quotedRaw.__typename === 'TweetUnavailable') {
+    // Unwrap before classifying: a tombstone can arrive inside a
+    // TweetWithVisibilityResults container.
+    const quotedRaw = unwrapTweetResult(result.quoted_status_result.result) ?? {};
+    if (isUnavailableResult(quotedRaw)) {
       tweet.quotedTweet = {
         id: '',
         url: '',
@@ -323,14 +339,16 @@ export function classifyResponse(response: Raw | null | undefined): TweetLookup 
   if (result.__typename === 'TweetTombstone') {
     const tombstoneText: string =
       result.tombstone?.text?.text ?? 'Tweet is unavailable.';
-    // A deleted author's posts are gone rather than withheld.
-    if (/no longer exists/i.test(tombstoneText)) return { status: 'not_found' };
-    let reason: 'nsfw' | 'protected' | 'suspended' | 'unknown' = 'unknown';
+    // Specific reasons win: "from a suspended account that no longer exists"
+    // is a suspension, not a wrong ID.
+    let reason: 'nsfw' | 'protected' | 'suspended' | undefined;
     if (/age-restricted|adult content|sensitive content/i.test(tombstoneText)) {
       reason = 'nsfw';
     } else if (/limits who can view|protected/i.test(tombstoneText)) reason = 'protected';
     else if (/suspended/i.test(tombstoneText)) reason = 'suspended';
-    return { status: 'unavailable', reason, message: tombstoneText };
+    // A deleted author's posts are gone rather than withheld.
+    if (!reason && /no longer exists/i.test(tombstoneText)) return { status: 'not_found' };
+    return { status: 'unavailable', reason: reason ?? 'unknown', message: tombstoneText };
   }
 
   if (result.__typename === 'TweetUnavailable') {

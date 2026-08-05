@@ -124,6 +124,8 @@ describe('get_tweet tool', () => {
 
     expect(result.isError).toBe(true);
     const text = (content[0] as { text: string }).text;
+    // Upstream error strings are third-party text, so they get the same fence.
+    expect(text).toContain('UNTRUSTED');
     expect(text).toContain('after 3 attempts');
     expect(text).toContain('FxEmbed');
   });
@@ -147,6 +149,64 @@ describe('get_tweet tool', () => {
     const images = content.filter(c => c.type === 'image');
     expect(images.length).toBeGreaterThanOrEqual(1);
     expect((images[0] as { mimeType: string }).mimeType).toBe('image/jpeg');
+  });
+
+  it('notes withheld images when the combined budget is exceeded', async () => {
+    const twoPhotos = {
+      data: {
+        tweetResult: {
+          result: {
+            __typename: 'Tweet',
+            rest_id: '1700000000000000001',
+            legacy: {
+              full_text: 'two big photos',
+              extended_entities: {
+                media: [
+                  {
+                    type: 'photo',
+                    media_url_https: 'https://pbs.twimg.com/media/BIG1.jpg'
+                  },
+                  {
+                    type: 'photo',
+                    media_url_https: 'https://pbs.twimg.com/media/BIG2.jpg'
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/1.1/guest/activate.json')) {
+        return jsonResponse({ guest_token: 'testtoken1' });
+      }
+      if (url.includes('/graphql/')) return jsonResponse(twoPhotos);
+      if (url.includes('twimg.com')) {
+        // Two of these exceed the combined base64 budget.
+        return new Response(new Uint8Array(800_000).fill(1), {
+          status: 200,
+          headers: { 'content-type': 'image/jpeg' }
+        });
+      }
+      return new Response('not found', { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const server = createServer();
+    const client = new Client({ name: 'test-client', version: '0.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+    const result = await client.callTool({
+      name: 'get_tweet',
+      arguments: { tweet: '1700000000000000001' }
+    });
+    const content = result.content as ContentBlock[];
+
+    expect(content.filter(c => c.type === 'image')).toHaveLength(1);
+    const texts = content.filter(c => c.type === 'text').map(c => (c as { text: string }).text);
+    expect(texts.some(t => t.includes('withheld'))).toBe(true);
   });
 
   it('skips image fetching entirely when max_images is 0', async () => {

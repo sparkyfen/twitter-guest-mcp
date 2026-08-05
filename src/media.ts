@@ -118,7 +118,7 @@ export async function fetchTweetImages(
   tweet: NormalizedTweet,
   max: number,
   fetchImpl: typeof fetch = fetch
-): Promise<FetchedImage[]> {
+): Promise<{ images: FetchedImage[]; withheld: number }> {
   const mediaList: NormalizedMedia[] = [
     ...tweet.media,
     ...(tweet.quotedTweet?.media ?? [])
@@ -126,15 +126,21 @@ export async function fetchTweetImages(
 
   const results = await Promise.all(mediaList.map(m => fetchOne(m.url, fetchImpl)));
 
-  // Stop once the combined payload would exceed the budget.
+  // Skip images that would push the combined payload over the budget, but keep
+  // looking: a later smaller image may still fit. The budget counts the emitted
+  // base64 string, which is what the transport actually carries.
   const kept: FetchedImage[] = [];
+  let withheld = 0;
   let total = 0;
   for (const image of results) {
     if (!image) continue;
-    const bytes = Buffer.byteLength(image.data, 'base64');
-    if (total + bytes > MAX_TOTAL_IMAGE_BYTES) break;
+    const bytes = image.data.length;
+    if (total + bytes > MAX_TOTAL_IMAGE_BYTES) {
+      withheld++;
+      continue;
+    }
     total += bytes;
     kept.push(image);
   }
-  return kept;
+  return { images: kept, withheld };
 }

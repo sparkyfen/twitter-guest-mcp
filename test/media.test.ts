@@ -44,7 +44,7 @@ describe('fetchTweetImages', () => {
     });
 
     const tweet = tweetWith([{ url: 'https://pbs.twimg.com/media/ABC.jpg' }]);
-    const images = await fetchTweetImages(tweet, 4, fetchMock as typeof fetch);
+    const { images } = await fetchTweetImages(tweet, 4, fetchMock as typeof fetch);
 
     expect(images).toHaveLength(1);
     expect(images[0]!.mimeType).toBe('image/jpeg');
@@ -69,7 +69,7 @@ describe('fetchTweetImages', () => {
       { url: 'https://pbs.twimg.com/media/HUGE.jpg' },
       { url: 'https://pbs.twimg.com/media/GOOD.jpg' }
     ]);
-    const images = await fetchTweetImages(tweet, 4, fetchMock as typeof fetch);
+    const { images } = await fetchTweetImages(tweet, 4, fetchMock as typeof fetch);
 
     expect(images).toHaveLength(1);
     expect(fetchMock).toHaveBeenCalledTimes(4);
@@ -88,7 +88,7 @@ describe('fetchTweetImages', () => {
     );
     const tweet = tweetWith([{ url: 'https://pbs.twimg.com/media/CLAIMSHUGE.jpg' }]);
 
-    const images = await fetchTweetImages(tweet, 4, fetchMock as typeof fetch);
+    const { images } = await fetchTweetImages(tweet, 4, fetchMock as typeof fetch);
     expect(images).toEqual([]);
   });
 
@@ -106,7 +106,7 @@ describe('fetchTweetImages', () => {
       { url: 'https://pbs.twimg.com/media/SVG.jpg' },
       { url: 'https://pbs.twimg.com/media/NOTYPE.jpg' }
     ]);
-    const images = await fetchTweetImages(tweet, 4, fetchMock as typeof fetch);
+    const { images } = await fetchTweetImages(tweet, 4, fetchMock as typeof fetch);
 
     expect(images).toHaveLength(1);
     expect(images[0]!.mimeType).toBe('image/jpeg');
@@ -119,22 +119,29 @@ describe('fetchTweetImages', () => {
       { url: 'https://user:pw@pbs.twimg.com/media/B.jpg' }
     ]);
 
-    const images = await fetchTweetImages(tweet, 4, fetchMock as typeof fetch);
+    const { images } = await fetchTweetImages(tweet, 4, fetchMock as typeof fetch);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(images).toEqual([]);
   });
 
-  it('stops adding images once the combined byte budget is reached', async () => {
-    // 3 x 1 MiB exceeds the 2 MiB combined budget, so only two survive.
-    const fetchMock = vi.fn(async () => imageResponse(1024 * 1024));
+  it('budgets on emitted base64 size and keeps later images that still fit', async () => {
+    // 800_000 raw bytes is 1_066_668 base64 chars, so two of them already blow
+    // the 2 MiB budget even though their decoded size would fit. The small
+    // third image must still be kept rather than dropped with the second.
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) =>
+      imageResponse(String(input).includes('SMALL') ? 1000 : 800_000)
+    );
     const tweet = tweetWith([
-      { url: 'https://pbs.twimg.com/media/ONE.jpg' },
-      { url: 'https://pbs.twimg.com/media/TWO.jpg' },
-      { url: 'https://pbs.twimg.com/media/THREE.jpg' }
+      { url: 'https://pbs.twimg.com/media/BIGONE.jpg' },
+      { url: 'https://pbs.twimg.com/media/BIGTWO.jpg' },
+      { url: 'https://pbs.twimg.com/media/SMALL.jpg' }
     ]);
 
-    const images = await fetchTweetImages(tweet, 4, fetchMock as typeof fetch);
+    const { images, withheld } = await fetchTweetImages(tweet, 4, fetchMock as typeof fetch);
     expect(images).toHaveLength(2);
+    expect(images[0]!.data.length).toBe(1_066_668);
+    expect(images[1]!.data.length).toBeLessThan(2000);
+    expect(withheld).toBe(1);
   });
 
   it('caps combined tweet + quoted-tweet media at max', async () => {
@@ -144,7 +151,7 @@ describe('fetchTweetImages', () => {
       [{ url: 'https://pbs.twimg.com/media/QUOTED.jpg' }]
     );
 
-    const images = await fetchTweetImages(tweet, 1, fetchMock as typeof fetch);
+    const { images } = await fetchTweetImages(tweet, 1, fetchMock as typeof fetch);
     expect(images).toHaveLength(1);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -153,7 +160,7 @@ describe('fetchTweetImages', () => {
     const fetchMock = vi.fn(async () => imageResponse());
     const tweet = tweetWith([{ url: 'https://pbs.twimg.com/media/MAIN.jpg' }]);
 
-    const images = await fetchTweetImages(tweet, 0, fetchMock as typeof fetch);
+    const { images } = await fetchTweetImages(tweet, 0, fetchMock as typeof fetch);
     expect(images).toEqual([]);
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -167,7 +174,7 @@ describe('fetchTweetImages', () => {
       { url: 'https://video.twimg.com/ext_tw_video_thumb/1/thumb.jpg' }
     ]);
 
-    const images = await fetchTweetImages(tweet, 4, fetchMock as typeof fetch);
+    const { images } = await fetchTweetImages(tweet, 4, fetchMock as typeof fetch);
     // Only the allowlisted https video.twimg.com URL is fetched.
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0]![0])).toContain('video.twimg.com');

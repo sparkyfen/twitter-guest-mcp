@@ -64,9 +64,11 @@ export function createServer(): McpServer {
       try {
         lookup = await fetchTweet(tweetId, session);
       } catch (e) {
+        // A TweetFetchError can carry upstream GraphQL error strings, so it gets
+        // the same fence as tombstone text.
         const message =
           e instanceof TweetFetchError
-            ? `${e.message}\n\nTwitter may be rate-limiting guest tokens or has changed its API surface. Retrying later sometimes helps; if this persists, the query constants may need re-syncing from FxEmbed.`
+            ? `${UNTRUSTED_CONTENT_NOTICE}\n\n${e.message}\n\nTwitter may be rate-limiting guest tokens or has changed its API surface. Retrying later sometimes helps; if this persists, the query constants may need re-syncing from FxEmbed.`
             : `Unexpected error: ${e instanceof Error ? e.message : String(e)}`;
         return textError(message);
       }
@@ -87,12 +89,15 @@ export function createServer(): McpServer {
         { type: 'text', text: JSON.stringify(lookup.tweet, null, 2) }
       ];
 
-      const maxImages = max_images ?? 4;
-      if (maxImages > 0) {
-        const images = await fetchTweetImages(lookup.tweet, maxImages);
-        for (const image of images) {
-          content.push({ type: 'image', data: image.data, mimeType: image.mimeType });
-        }
+      const { images, withheld } = await fetchTweetImages(lookup.tweet, max_images ?? 4);
+      for (const image of images) {
+        content.push({ type: 'image', data: image.data, mimeType: image.mimeType });
+      }
+      if (withheld > 0) {
+        content.push({
+          type: 'text',
+          text: `${withheld} image${withheld === 1 ? ' was' : 's were'} withheld to stay within the response size limit; the media URLs above still point at them.`
+        });
       }
 
       return { content };
