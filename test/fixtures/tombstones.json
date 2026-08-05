@@ -1,0 +1,24 @@
+{
+  "notFound": { "data": { "tweetResult": {} } },
+  "nsfw": {
+    "data": {
+      "tweetResult": {
+        "result": { "__typename": "TweetUnavailable", "reason": "NsfwLoggedOut" }
+      }
+    }
+  },
+  "protected": {
+    "data": {
+      "tweetResult": {
+        "result": { "__typename": "TweetUnavailable", "reason": "Protected" }
+      }
+    }
+  },
+  "suspended": {
+    "data": {
+      "tweetResult": {
+        "result": { "__typename": "TweetUnavailable", "reason": "Suspended" }
+      }
+    }
+  }
+}
