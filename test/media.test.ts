@@ -88,8 +88,29 @@ describe('fetchTweetImages', () => {
     );
     const tweet = tweetWith([{ url: 'https://pbs.twimg.com/media/CLAIMSHUGE.jpg' }]);
 
-    const { images } = await fetchTweetImages(tweet, 4, fetchMock as typeof fetch);
+    const { images, withheld } = await fetchTweetImages(tweet, 4, fetchMock as typeof fetch);
     expect(images).toEqual([]);
+    expect(withheld).toBe(1);
+  });
+
+  it('counts an image over the per-image cap as withheld, not silently missing', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('HUGE')) return imageResponse(1024 * 1024 + 1);
+      if (url.includes('NOTFOUND')) return imageResponse(100, 'image/jpeg', 404);
+      return imageResponse();
+    });
+
+    const tweet = tweetWith([
+      { url: 'https://pbs.twimg.com/media/HUGE.jpg' },
+      { url: 'https://pbs.twimg.com/media/NOTFOUND.jpg' },
+      { url: 'https://pbs.twimg.com/media/GOOD.jpg' }
+    ]);
+    const { images, withheld } = await fetchTweetImages(tweet, 4, fetchMock as typeof fetch);
+
+    expect(images).toHaveLength(1);
+    // Only the oversized one counts: a failed fetch is not a size problem.
+    expect(withheld).toBe(1);
   });
 
   it('accepts image mime types case-insensitively but rejects svg and missing types', async () => {

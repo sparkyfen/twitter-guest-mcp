@@ -41,8 +41,11 @@ function resizedUrl(url: string): string {
   }
 }
 
+/** Returned when an image was reachable but too big to inline, so it can be counted as withheld. */
+const TOO_LARGE = 'too_large';
+
 /** Reads the body with a running byte cap so an oversized response is never fully buffered. */
-async function readCapped(response: Response): Promise<Buffer | null> {
+async function readCapped(response: Response): Promise<Buffer | typeof TOO_LARGE | null> {
   if (!response.body) return null;
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -53,7 +56,7 @@ async function readCapped(response: Response): Promise<Buffer | null> {
     total += value.byteLength;
     if (total > MAX_IMAGE_BYTES) {
       await reader.cancel();
-      return null;
+      return TOO_LARGE;
     }
     chunks.push(value);
   }
@@ -63,7 +66,7 @@ async function readCapped(response: Response): Promise<Buffer | null> {
 async function fetchOne(
   url: string,
   fetchImpl: typeof fetch
-): Promise<FetchedImage | null> {
+): Promise<FetchedImage | typeof TOO_LARGE | null> {
   try {
     const parsed = new URL(url);
     if (
@@ -96,10 +99,11 @@ async function fetchOne(
     const contentLength = parseInt(response.headers.get('content-length') ?? '', 10);
     if (!isNaN(contentLength) && contentLength > MAX_IMAGE_BYTES) {
       await response.body?.cancel();
-      return null;
+      return TOO_LARGE;
     }
     const body = await readCapped(response);
     if (!body) return null;
+    if (body === TOO_LARGE) return TOO_LARGE;
     return {
       data: body.toString('base64'),
       mimeType
@@ -133,6 +137,12 @@ export async function fetchTweetImages(
   let withheld = 0;
   let total = 0;
   for (const image of results) {
+    // An image too big to inline is withheld, not silently missing: the user
+    // otherwise sees media URLs with no explanation for the absent pictures.
+    if (image === TOO_LARGE) {
+      withheld++;
+      continue;
+    }
     if (!image) continue;
     const bytes = image.data.length;
     if (total + bytes > MAX_TOTAL_IMAGE_BYTES) {

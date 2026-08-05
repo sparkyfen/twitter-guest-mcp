@@ -499,12 +499,30 @@ describe('classifyResponse', () => {
     const lookup = classifyResponse(
       quoting({
         __typename: 'TweetWithVisibilityResults',
+        // rest_id on the wrapper: without it the empty-object arm would catch
+        // this case even if the unwrap-before-classify step were removed.
+        rest_id: '9',
         tweet: { __typename: 'TweetTombstone', tombstone: { text: { text: 'gone' } } }
       })
     );
     expect(lookup.status).toBe('found');
     if (lookup.status !== 'found') return;
     expect(lookup.tweet.quotedTweet?.note).toContain('unavailable');
+  });
+
+  it('flags a quoted tombstone that still carries a rest_id and legacy body', () => {
+    const lookup = classifyResponse(
+      quoting({
+        __typename: 'TweetTombstone',
+        rest_id: '9',
+        legacy: { full_text: 'leaked tombstone body' },
+        tombstone: { text: { text: 'gone' } }
+      })
+    );
+    expect(lookup.status).toBe('found');
+    if (lookup.status !== 'found') return;
+    expect(lookup.tweet.quotedTweet?.note).toContain('unavailable');
+    expect(lookup.tweet.quotedTweet?.text).toBe('');
   });
 
   it('flags an empty-object quoted result as unavailable', () => {
@@ -578,20 +596,41 @@ describe('classifyResponse', () => {
     ).toBe('x');
   });
 
+  it('does not rewrite an expanded URL that itself contains another t.co link', () => {
+    expect(
+      textOf({
+        full_text: 'a https://t.co/AA b https://t.co/BB',
+        entities: {
+          urls: [
+            {
+              url: 'https://t.co/AA',
+              expanded_url: 'https://ex.example/x?ref=https://t.co/BB'
+            },
+            { url: 'https://t.co/BB', expanded_url: 'https://benign.example/' }
+          ]
+        }
+      })
+    ).toBe('a https://ex.example/x?ref=https://t.co/BB b https://benign.example/');
+  });
+
   it('omits non-numeric counts and normalizes stringified ones', () => {
     const lookup = classifyResponse(
       textPayload({
         full_text: 'counts',
         favorite_count: '12',
         reply_count: null,
-        retweet_count: 3
+        retweet_count: 'n/a',
+        quote_count: '7',
+        bookmark_count: {}
       })
     );
     expect(lookup.status).toBe('found');
     if (lookup.status !== 'found') return;
     expect(lookup.tweet.metrics.likes).toBe(12);
     expect(lookup.tweet.metrics.replies).toBeUndefined();
-    expect(lookup.tweet.metrics.retweets).toBe(3);
+    expect(lookup.tweet.metrics.retweets).toBeUndefined();
+    expect(lookup.tweet.metrics.quotes).toBe(7);
+    expect(lookup.tweet.metrics.bookmarks).toBeUndefined();
   });
 
   it('prefers a specific tombstone reason over the deleted-account fallback', () => {
@@ -614,6 +653,47 @@ describe('classifyResponse', () => {
     expect(classifyResponse({ data: { tweetResult: { result: {} } } })).toEqual({
       status: 'not_found'
     });
+  });
+
+  const topLevel = (result: unknown) => ({ data: { tweetResult: { result } } });
+
+  it('classifies a tombstone wrapped in TweetWithVisibilityResults, keeping its reason', () => {
+    expect(
+      classifyResponse(
+        topLevel({
+          __typename: 'TweetWithVisibilityResults',
+          rest_id: '9',
+          tweet: {
+            __typename: 'TweetTombstone',
+            tombstone: { text: { text: 'This Post is from a suspended account.' } }
+          }
+        })
+      )
+    ).toEqual({
+      status: 'unavailable',
+      reason: 'suspended',
+      message: 'This Post is from a suspended account.'
+    });
+  });
+
+  it('classifies a TweetUnavailable wrapped in TweetWithVisibilityResults', () => {
+    expect(
+      classifyResponse(
+        topLevel({
+          __typename: 'TweetWithVisibilityResults',
+          rest_id: '9',
+          tweet: { __typename: 'TweetUnavailable', reason: 'Protected' }
+        })
+      )
+    ).toMatchObject({ status: 'unavailable', reason: 'protected' });
+  });
+
+  it('treats an empty wrapped result as not found rather than an empty tweet', () => {
+    expect(
+      classifyResponse(
+        topLevel({ __typename: 'TweetWithVisibilityResults', rest_id: '9', tweet: {} })
+      )
+    ).toEqual({ status: 'not_found' });
   });
 
   it('reads the avatar from the new-shape user payload', () => {

@@ -184,7 +184,7 @@ function cleanText(
 ): string {
   // Unescaping first: expanded_url values are substituted in afterwards, so
   // they keep exactly the form X resolved rather than being unescaped too.
-  let out = unescapeHtml(text);
+  const source = unescapeHtml(text);
   const replacements: { from: string; to: string }[] = [
     ...(urls ?? [])
       .filter(u => u.url && u.expanded_url)
@@ -194,8 +194,19 @@ function cleanText(
   // Longest first: a shorter t.co slug can be a strict prefix of a longer one,
   // and replacing it first would corrupt the longer URL.
   replacements.sort((a, b) => b.from.length - a.from.length);
-  for (const r of replacements) {
-    out = out.split(r.from).join(r.to);
+  // Single non-overlapping pass, emitting into a separate buffer: sequential
+  // whole-string replacement would let an inserted expanded_url that happens to
+  // contain another t.co slug be rewritten by a later entity.
+  let out = '';
+  for (let i = 0; i < source.length; ) {
+    const match = replacements.find(r => r.from && source.startsWith(r.from, i));
+    if (match) {
+      out += match.to;
+      i += match.from.length;
+    } else {
+      out += source[i];
+      i++;
+    }
   }
   return out.trim();
 }
@@ -330,9 +341,11 @@ export function normalizeTweet(rawResult: Raw, includeQuoted = true): Normalized
 
 /** Classifies the top-level TweetResultByRestId response. */
 export function classifyResponse(response: Raw | null | undefined): TweetLookup {
-  const result: Raw | undefined = response?.data?.tweetResult?.result;
+  // Unwrap before classifying: a tombstone, an unavailable result or an empty
+  // result can each arrive inside a TweetWithVisibilityResults container.
+  const result: Raw | undefined = unwrapTweetResult(response?.data?.tweetResult?.result);
 
-  if (!result || Object.keys(result).length === 0) {
+  if (!result) {
     return { status: 'not_found' };
   }
 
@@ -381,6 +394,9 @@ export function classifyResponse(response: Raw | null | undefined): TweetLookup 
         };
     }
   }
+
+  // No usable tweet (empty-object form, or a container with nothing inside).
+  if (isUnavailableResult(result)) return { status: 'not_found' };
 
   return { status: 'found', tweet: normalizeTweet(result) };
 }
