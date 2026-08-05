@@ -4,15 +4,26 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 18.17 is the floor declared in package.json engines, and it is load
+        # bearing: bare `globalThis.crypto` is only unflagged from Node 19, and
+        # Accept-Encoding is built from what the runtime's zlib can decode.
+        node-version: ['18.17', 22]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
       - run: npm run typecheck

@@ -1,0 +1,28 @@
+# Live end-to-end check against the real X guest API. Runs on a schedule (not on
+# PRs) so it can fail loudly when X rotates its GraphQL queryId or restricts
+# guest access, without external breakage ever blocking a merge.
+#
+# When this goes red, the fix is usually re-syncing the query constants in
+# src/constants.ts from FxEmbed — see the Maintenance section of the README.
+name: Smoke
+
+on:
+  schedule:
+    - cron: "0 14 * * 1" # Mondays 14:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:live

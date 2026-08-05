@@ -1,3 +1,7 @@
+// Imported rather than taken off the global: `globalThis.crypto` is only
+// exposed unflagged from Node 19, so bare `crypto` breaks on the declared floor.
+import { randomUUID } from 'node:crypto';
+
 import {
   API_ROOT,
   BASE_HEADERS,
@@ -99,7 +103,7 @@ export class GuestSession {
 
   private async activate(): Promise<ActiveSession> {
     const identity = generateBrowserIdentity();
-    const csrfToken = crypto.randomUUID().replace(/-/g, '');
+    const csrfToken = randomUUID().replace(/-/g, '');
     const response = await this.fetchImpl(`${API_ROOT}/1.1/guest/activate.json`, {
       method: 'POST',
       headers: {
