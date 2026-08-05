@@ -86,6 +86,11 @@ function isUnavailableResult(raw: Raw): boolean {
   return !raw.rest_id && !raw.legacy;
 }
 
+/** X's "this tweet is gone" form: a result object with nothing in it at all. */
+function isEmptyResult(raw: Raw): boolean {
+  return Object.keys(raw).length === 0;
+}
+
 function unwrapUserResult(result: Raw | undefined): Raw | undefined {
   if (!result) return undefined;
   if (result.__typename === 'UserWithVisibilityResults' && result.user) {
@@ -395,8 +400,23 @@ export function classifyResponse(response: Raw | null | undefined): TweetLookup 
     }
   }
 
-  // No usable tweet (empty-object form, or a container with nothing inside).
-  if (isUnavailableResult(result)) return { status: 'not_found' };
+  // Nothing at all in the result: X's form for a tweet that is genuinely gone.
+  if (isEmptyResult(result)) return { status: 'not_found' };
+
+  // Has content, but neither a rest_id nor a legacy block: a shape this server
+  // does not understand. Report the parse failure rather than claiming the
+  // tweet does not exist.
+  if (isUnavailableResult(result)) {
+    return {
+      status: 'unavailable',
+      reason: 'unknown',
+      message:
+        'X returned a result shape this server could not parse' +
+        (typeof result.__typename === 'string' ? ` (${result.__typename})` : '') +
+        '. The tweet may well exist, but it cannot be read through the guest API as-is. ' +
+        'If this persists, the query constants may need re-syncing from FxEmbed.'
+    };
+  }
 
   return { status: 'found', tweet: normalizeTweet(result) };
 }

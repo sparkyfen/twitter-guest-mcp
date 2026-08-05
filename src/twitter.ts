@@ -30,7 +30,8 @@ export async function fetchTweet(
   tweetId: string,
   session: GuestSession,
   fetchImpl: typeof fetch = fetch,
-  requestTimeoutMs: number = REQUEST_TIMEOUT_MS
+  requestTimeoutMs: number = REQUEST_TIMEOUT_MS,
+  retryBaseDelayMs: number = RETRY_BASE_DELAY_MS
 ): Promise<TweetLookup> {
   let lastError: unknown = null;
 
@@ -39,7 +40,7 @@ export async function fetchTweet(
     // wiping the token would just force the next call to re-activate.
     const canRetry = attempt < MAX_ATTEMPTS - 1;
     if (attempt > 0) {
-      await sleep(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1));
+      await sleep(retryBaseDelayMs * 2 ** (attempt - 1));
     }
 
     let token: string;

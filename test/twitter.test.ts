@@ -100,7 +100,9 @@ describe('fetchTweet', () => {
     });
 
     const session = new GuestSession(fetchMock as typeof fetch);
-    const lookup = await fetchTweet('1', session, fetchMock as typeof fetch);
+    // Tiny backoff: the subject here is the retry, not the delay (see the
+    // fake-timer test below, which guards the real backoff values).
+    const lookup = await fetchTweet('1', session, fetchMock as typeof fetch, undefined, 1);
 
     expect(lookup.status).toBe('found');
     expect(graphqlCalls).toBe(2);
@@ -142,7 +144,7 @@ describe('fetchTweet', () => {
     });
 
     const session = new GuestSession(fetchMock as typeof fetch);
-    const lookup = await fetchTweet('1', session, fetchMock as typeof fetch);
+    const lookup = await fetchTweet('1', session, fetchMock as typeof fetch, undefined, 1);
 
     // Must not classify the partial payload as not_found; must retry instead.
     expect(lookup.status).toBe('found');
@@ -157,9 +159,9 @@ describe('fetchTweet', () => {
     });
 
     const session = new GuestSession(fetchMock as typeof fetch);
-    await expect(fetchTweet('1', session, fetchMock as typeof fetch)).rejects.toThrow(
-      TweetFetchError
-    );
+    await expect(
+      fetchTweet('1', session, fetchMock as typeof fetch, undefined, 1)
+    ).rejects.toThrow(TweetFetchError);
   });
 
   it('aborts a GraphQL request that never responds once the timeout elapses', async () => {
@@ -175,7 +177,7 @@ describe('fetchTweet', () => {
 
     const session = new GuestSession(fetchMock as unknown as typeof fetch);
     await expect(
-      fetchTweet('1', session, fetchMock as unknown as typeof fetch, 5)
+      fetchTweet('1', session, fetchMock as unknown as typeof fetch, 5, 1)
     ).rejects.toThrow(/timeout|abort/i);
   });
 
@@ -212,6 +214,36 @@ describe('fetchTweet', () => {
     }
   });
 
+  it('honors an injected retry base delay', async () => {
+    vi.useFakeTimers();
+    try {
+      let graphqlCalls = 0;
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/1.1/guest/activate.json')) return activation();
+        graphqlCalls++;
+        return jsonResponse({ errors: [{ message: 'Denied' }] });
+      });
+
+      const session = new GuestSession(fetchMock as typeof fetch);
+      const promise = fetchTweet('1', session, fetchMock as typeof fetch, undefined, 1000);
+      const rejection = expect(promise).rejects.toThrow(TweetFetchError);
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(graphqlCalls).toBe(1);
+      // Still 1 past the module default, so the injected delay is the one in use.
+      await vi.advanceTimersByTimeAsync(999);
+      expect(graphqlCalls).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(graphqlCalls).toBe(2);
+
+      await vi.advanceTimersByTimeAsync(2000);
+      await rejection;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('gives up after 3 attempts with a descriptive error', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -220,9 +252,9 @@ describe('fetchTweet', () => {
     });
 
     const session = new GuestSession(fetchMock as typeof fetch);
-    await expect(fetchTweet('1', session, fetchMock as typeof fetch)).rejects.toThrow(
-      TweetFetchError
-    );
+    await expect(
+      fetchTweet('1', session, fetchMock as typeof fetch, undefined, 1)
+    ).rejects.toThrow(TweetFetchError);
     const graphqlCalls = fetchMock.mock.calls.filter(([input]) =>
       String(input).includes('/graphql/')
     );

@@ -694,6 +694,18 @@ describe('classifyResponse', () => {
 
   const topLevel = (result: unknown) => ({ data: { tweetResult: { result } } });
 
+  it('reports an unrecognized result shape as unavailable, not as a missing tweet', () => {
+    const lookup = classifyResponse(
+      topLevel({ __typename: 'SomeFutureShape', tweet: { rest_id: '9' } })
+    );
+    expect(lookup.status).toBe('unavailable');
+    if (lookup.status !== 'unavailable') return;
+    expect(lookup.reason).toBe('unknown');
+    expect(lookup.message).toContain('could not parse');
+    expect(lookup.message).toContain('SomeFutureShape');
+    expect(lookup.message).toContain('FxEmbed');
+  });
+
   it('classifies a tombstone wrapped in TweetWithVisibilityResults, keeping its reason', () => {
     expect(
       classifyResponse(
