@@ -525,6 +525,43 @@ describe('classifyResponse', () => {
     expect(lookup.tweet.quotedTweet?.text).toBe('');
   });
 
+  it('flags a quoted TweetUnavailable that still carries a rest_id and legacy body', () => {
+    const lookup = classifyResponse(
+      quoting({
+        __typename: 'TweetUnavailable',
+        reason: 'Protected',
+        // rest_id and legacy so the empty-object arm cannot catch this: only the
+        // TweetUnavailable typename check keeps the inner text from leaking.
+        rest_id: '9',
+        legacy: { full_text: 'leaked inner text' }
+      })
+    );
+    expect(lookup.status).toBe('found');
+    if (lookup.status !== 'found') return;
+    expect(lookup.tweet.quotedTweet?.note).toContain('unavailable');
+    expect(lookup.tweet.quotedTweet?.text).toBe('');
+    expect(lookup.tweet.quotedTweet?.id).toBe('');
+  });
+
+  it('still normalizes a quoted result carrying only a rest_id', () => {
+    const lookup = classifyResponse(quoting({ __typename: 'Tweet', rest_id: '9' }));
+    expect(lookup.status).toBe('found');
+    if (lookup.status !== 'found') return;
+    expect(lookup.tweet.quotedTweet?.id).toBe('9');
+    expect(lookup.tweet.quotedTweet?.note).toBeUndefined();
+  });
+
+  it('still normalizes a quoted result carrying only a legacy block', () => {
+    const lookup = classifyResponse(
+      quoting({ __typename: 'Tweet', legacy: { id_str: '9', full_text: 'inner' } })
+    );
+    expect(lookup.status).toBe('found');
+    if (lookup.status !== 'found') return;
+    expect(lookup.tweet.quotedTweet?.id).toBe('9');
+    expect(lookup.tweet.quotedTweet?.text).toBe('inner');
+    expect(lookup.tweet.quotedTweet?.note).toBeUndefined();
+  });
+
   it('flags an empty-object quoted result as unavailable', () => {
     const lookup = classifyResponse(quoting({}));
     expect(lookup.status).toBe('found');
