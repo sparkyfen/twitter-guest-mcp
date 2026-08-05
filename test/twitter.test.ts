@@ -85,6 +85,47 @@ describe('fetchTweet', () => {
     expect(activations).toBe(1);
   });
 
+  it('presents one browser identity per token, re-rolled when the token rotates', async () => {
+    // (kind, User-Agent, ct0) per request, so activation and its GraphQL calls pair up.
+    const seen: Array<{ kind: 'activate' | 'graphql'; ua: string; ct0?: string }> = [];
+    let graphqlCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const headers = init?.headers as Record<string, string>;
+      const ua = headers['User-Agent']!;
+      if (url.includes('/1.1/guest/activate.json')) {
+        seen.push({ kind: 'activate', ua });
+        return activation();
+      }
+      seen.push({ kind: 'graphql', ua, ct0: headers['x-csrf-token']! });
+      graphqlCalls++;
+      // Force exactly one token rotation partway through.
+      if (graphqlCalls === 2) return jsonResponse({}, 429);
+      return jsonResponse(photoQuote);
+    });
+
+    const session = new GuestSession(fetchMock as typeof fetch);
+    await fetchTweet('1', session, fetchMock as typeof fetch, undefined, 1);
+    await fetchTweet('2', session, fetchMock as typeof fetch, undefined, 1);
+
+    // activate, graphql, graphql(429), activate, graphql
+    expect(seen.map(s => s.kind)).toEqual([
+      'activate',
+      'graphql',
+      'graphql',
+      'activate',
+      'graphql'
+    ]);
+    // Every request on the first token looks like the same browser...
+    expect(new Set(seen.slice(0, 3).map(s => s.ua)).size).toBe(1);
+    // ...and so does every request on the second.
+    expect(seen[4]!.ua).toBe(seen[3]!.ua);
+    // The ct0 cookie is pinned to the token: same across the first token's two
+    // GraphQL calls, different once the token rotates.
+    expect(seen[2]!.ct0).toBe(seen[1]!.ct0);
+    expect(seen[4]!.ct0).not.toBe(seen[1]!.ct0);
+  });
+
   it('retries with a fresh token on 429 and succeeds', async () => {
     let graphqlCalls = 0;
     let activations = 0;

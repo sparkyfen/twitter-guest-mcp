@@ -1,5 +1,5 @@
 import { API_ROOT, TWEET_RESULT_BY_REST_ID } from './constants.js';
-import { GuestSession, buildGuestHeaders } from './guest.js';
+import { GuestSession, buildGuestHeaders, type ActiveSession } from './guest.js';
 import { classifyResponse, type TweetLookup } from './normalize.js';
 
 const MAX_ATTEMPTS = 3;
@@ -43,13 +43,14 @@ export async function fetchTweet(
       await sleep(retryBaseDelayMs * 2 ** (attempt - 1));
     }
 
-    let token: string;
+    let active: ActiveSession;
     try {
-      token = await session.getToken();
+      active = await session.getSession();
     } catch (e) {
       lastError = e;
       continue;
     }
+    const token = active.token;
 
     /** Records the failure and drops the token so the next attempt re-activates. */
     const fail = (e: unknown) => {
@@ -61,7 +62,7 @@ export async function fetchTweet(
     try {
       response = await fetchImpl(buildUrl(tweetId), {
         method: 'GET',
-        headers: buildGuestHeaders(token),
+        headers: buildGuestHeaders(active),
         signal: AbortSignal.timeout(requestTimeoutMs)
       });
     } catch (e) {
